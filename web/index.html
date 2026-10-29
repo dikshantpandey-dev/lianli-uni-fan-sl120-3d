@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Lian Li UNI FAN SL120 RGB – 360° viewer</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #0b0b0d; color: #ddd; font: 13px/1.4 system-ui, sans-serif; }
+    #ui { position: fixed; left: 12px; top: 12px; background: rgba(20,20,24,.82); padding: 10px 12px; border-radius: 8px; }
+    #ui label { display: block; margin: 4px 0; }
+    #err { color: #f66; }
+  </style>
+  <script type="importmap">
+    { "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+    } }
+  </script>
+</head>
+<body>
+<div id="ui">
+  <b>UNI FAN SL120 RGB</b><br />
+  <label><input type="checkbox" id="spin" checked /> Spin rotor</label>
+  <label>RPM <input type="range" id="rpm" min="0" max="1900" step="50" value="300" /> <span id="rpmv">300</span></label>
+  <label><input type="checkbox" id="rgb" checked /> RGB on</label>
+  <label><input type="checkbox" id="rainbow" checked /> Rainbow flow</label>
+  <label>Static colour <input type="color" id="col" value="#00b4ff" /></label>
+  <label><input type="checkbox" id="screws" checked /> Screws</label>
+  <div id="err"></div>
+</div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+const MODEL = new URLSearchParams(location.search).get('model') || '../glb/LianLi_UNI_FAN_SL120.glb';
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0b0d);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+scene.environmentIntensity = 0.9;
+
+const camera = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.01, 10);
+camera.position.set(-0.17, 0.09, 0.27);           // metres; model is 0.12 m wide
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.minDistance = 0.08; controls.maxDistance = 1.2;
+controls.autoRotate = true; controls.autoRotateSpeed = 1.2;   // 360° turntable; drag to rotate freely
+
+const key = new THREE.DirectionalLight(0xffffff, 1.6); key.position.set(-1, 1.5, 2); scene.add(key);
+const rim = new THREE.DirectionalLight(0xffffff, 1.2); rim.position.set(1, 0.5, -2); scene.add(rim);
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.55, 0.35, 0.82);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+let rotor = null, rgbMats = [], screws = null;
+new GLTFLoader().load(MODEL, (gltf) => {
+  const fan = gltf.scene;
+  scene.add(fan);
+  rotor = fan.getObjectByName('Rotor');            // pivot on the fan axis (local +Z)
+  screws = fan.getObjectByName('Screws');
+  fan.traverse((o) => {
+    if (o.isMesh && o.material.name === 'MAT_RGB_Diffuser_PC') {
+      o.material.emissiveMap.wrapS = THREE.RepeatWrapping;   // U = position around the light loop
+      o.material.emissiveMap.needsUpdate = true;
+      rgbMats.push(o.material);
+    }
+  });
+  const box = new THREE.Box3().setFromObject(fan);
+  controls.target.copy(box.getCenter(new THREE.Vector3()));
+  window.__fanLoaded = { meshes: countMeshes(fan), size: box.getSize(new THREE.Vector3()).toArray() };
+}, undefined, (e) => { document.getElementById('err').textContent = 'Load error: ' + e.message; window.__fanError = String(e); });
+
+function countMeshes(o) { let n = 0; o.traverse((c) => { if (c.isMesh) n++; }); return n; }
+
+const $ = (id) => document.getElementById(id);
+$('rpm').oninput = () => ($('rpmv').textContent = $('rpm').value);
+$('screws').onchange = () => screws && (screws.visible = $('screws').checked);
+
+const clock = new THREE.Clock();
+const staticCol = new THREE.Color();
+renderer.setAnimationLoop(() => {
+  const dt = clock.getDelta();
+  if (rotor && $('spin').checked) rotor.rotation.z += (+$('rpm').value / 60) * Math.PI * 2 * dt; // CCW seen from front
+  for (const m of rgbMats) {
+    if (!$('rgb').checked) { m.emissiveIntensity = 0; continue; }
+    m.emissiveIntensity = 3.0;
+    if ($('rainbow').checked) { m.emissive.set(0xffffff); m.emissiveMap && (m.emissiveMap.offset.x -= dt * 0.25); m.emissiveMap && (m.emissiveMap.repeat.x = 1); }
+    else { staticCol.set($('col').value); m.emissive.copy(staticCol); }
+    if (!$('rainbow').checked && m.emissiveMap) { m.userData.map = m.userData.map || m.emissiveMap; m.emissiveMap = null; m.needsUpdate = true; }
+    if ($('rainbow').checked && !m.emissiveMap && m.userData.map) { m.emissiveMap = m.userData.map; m.needsUpdate = true; }
+  }
+  controls.update();
+  composer.render();
+});
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
